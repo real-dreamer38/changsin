@@ -9,7 +9,7 @@ import {
   type FileKind,
 } from "@/lib/ingest";
 
-export const maxDuration = 300; // 대용량 PDF/이미지 처리 여유
+export const maxDuration = 60; // Vercel 무료(Hobby) 티어 최대치
 
 const STORAGE_BUCKET = "documents";
 

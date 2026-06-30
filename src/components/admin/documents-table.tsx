@@ -20,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { formatDate, formatBytes } from "@/lib/utils";
+import { formatDate, formatBytes, safeJson } from "@/lib/utils";
 import { toast } from "sonner";
 import { Trash2, Eye, Loader2 } from "lucide-react";
 import type { DocumentRow } from "@/types";
@@ -38,7 +38,7 @@ export function DocumentsTable({ docs }: { docs: DocumentRow[] }) {
       const res = await fetch(`/api/admin/documents/${deleting.id}`, {
         method: "DELETE",
       });
-      const json = await res.json();
+      const json = await safeJson(res);
       if (!res.ok) throw new Error(json.error);
       toast.success("삭제 완료", {
         description: `${deleting.file_name} (DB·Storage·벡터 모두 삭제)`,

@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { genAI, GENERATION_MODEL, MEETING_SCHEMA } from "@/lib/gemini";
 import type { MeetingAnalysis } from "@/types";
 
-export const maxDuration = 120;
+export const maxDuration = 60; // Vercel 무료(Hobby) 티어 최대치
 
 export async function POST(request: Request) {
   // 승인 사용자만

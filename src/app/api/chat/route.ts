@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { google, STREAM_MODEL } from "@/lib/ai";
 import { retrieveContext, buildAnswerPrompt } from "@/lib/rag";
 
-export const maxDuration = 120;
+export const maxDuration = 60; // Vercel 무료(Hobby) 티어 최대치
 
 // 스트리밍으로 채워질 구조화 답변 스키마 (기존 AiAnswer 와 동일 형태)
 const answerSchema = z.object({

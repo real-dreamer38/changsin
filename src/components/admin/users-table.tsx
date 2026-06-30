@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { formatDate } from "@/lib/utils";
+import { formatDate, safeJson } from "@/lib/utils";
 import { toast } from "sonner";
 import { Check, ShieldOff, Shield, Ban, Loader2 } from "lucide-react";
 import type { Profile } from "@/types";
@@ -38,7 +38,7 @@ export function UsersTable({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const json = await res.json();
+      const json = await safeJson(res);
       if (!res.ok) throw new Error(json.error);
       toast.success("변경 완료");
       router.refresh();

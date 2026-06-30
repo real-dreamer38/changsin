@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+export const maxDuration = 60; // Vercel 무료(Hobby) 티어 최대치
+
 /** 관리자 자료 삭제: DB(documents+chunks CASCADE) + Storage 모두 제거 */
 export async function DELETE(
   _request: Request,

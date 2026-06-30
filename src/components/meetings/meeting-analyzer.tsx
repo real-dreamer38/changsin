@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { PresentationSlide } from "@/components/chat/presentation-slide";
+import { safeJson } from "@/lib/utils";
 import { toast } from "sonner";
 import {
   Loader2,
@@ -52,7 +53,7 @@ export function MeetingAnalyzer() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: content }),
       });
-      const json = await res.json();
+      const json = await safeJson(res);
       if (!res.ok) throw new Error(json.error ?? "분석에 실패했습니다.");
       setResult(json as MeetingAnalysis);
     } catch (e: any) {

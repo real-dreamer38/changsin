@@ -7,7 +7,7 @@ import { sha256File } from "@/lib/hash";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { formatBytes } from "@/lib/utils";
+import { formatBytes, safeJson } from "@/lib/utils";
 import { toast } from "sonner";
 import {
   UploadCloud,
@@ -301,7 +301,8 @@ export function UploadForm() {
             mimeType: it.file.type,
           }),
         });
-        const json = await res.json();
+        // JSON 이 아닌 응답(Vercel 504/HTML)은 safeJson 이 깔끔한 에러로 변환 → catch 로 전달
+        const json = await safeJson(res);
         if (!res.ok) {
           update(i, {
             status: json.error === "duplicate" ? "duplicate" : "error",

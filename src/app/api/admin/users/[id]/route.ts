@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+export const maxDuration = 60; // Vercel 무료(Hobby) 티어 최대치
+
 /** 관리자: 사용자 승인 상태 / 권한 변경 */
 export async function PATCH(
   request: Request,
