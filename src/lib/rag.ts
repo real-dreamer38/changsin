@@ -6,8 +6,7 @@ import type { AiAnswer, ChatResponse, MatchedChunk } from "@/types";
 
 // 관련도 임계치: 이 값 미만이면 사내 자료가 불충분하다고 판단 → 웹 딥서치
 const SIMILARITY_THRESHOLD = 0.55;
-// retrieval 시 1차로 가져올 후보 (느슨한 임계치)
-const RETRIEVE_THRESHOLD = 0.35;
+// 하이브리드 검색으로 가져올 청크 수
 const RETRIEVE_COUNT = 8;
 
 export interface RagContext {
@@ -32,16 +31,19 @@ export interface RagContext {
 export async function retrieveContext(question: string): Promise<RagContext> {
   const supabase = createAdminClient();
 
-  // --- 1) 내부 자료 검색 ---
+  // --- 1) 내부 자료 검색 (하이브리드: 전문검색 + 벡터 RRF) ---
   const queryEmbedding = await embedQuery(question);
-  const { data: matches, error } = await supabase.rpc("match_document_chunks", {
-    query_embedding: queryEmbedding,
-    match_threshold: RETRIEVE_THRESHOLD,
-    match_count: RETRIEVE_COUNT,
-  });
+  const { data: matches, error } = await supabase.rpc(
+    "hybrid_match_document_chunks",
+    {
+      query_text: question,
+      query_embedding: queryEmbedding,
+      match_count: RETRIEVE_COUNT,
+    }
+  );
 
   if (error) {
-    throw new Error(`벡터 검색 실패: ${error.message}`);
+    throw new Error(`하이브리드 검색 실패: ${error.message}`);
   }
 
   const chunks = (matches ?? []) as MatchedChunk[];
@@ -73,12 +75,11 @@ export async function retrieveContext(question: string): Promise<RagContext> {
     }
   }
 
+  // 각 청크에 원본 파일명을 명시적으로 묶어 전달 → 답변에 출처(Citation) 표기 가능
   const internalContext = chunks
     .map(
       (c, i) =>
-        `[사내자료 ${i + 1} | 출처: ${c.file_name} | 유사도: ${c.similarity.toFixed(
-          2
-        )}]\n${c.content}`
+        `[사내자료 ${i + 1} | 파일명: ${c.file_name}]\n${c.content}`
     )
     .join("\n\n");
 
@@ -136,7 +137,13 @@ export function buildAnswerPrompt(question: string, ctx: RagContext): {
 3. [웹 검색]은 [사내 문서]에 이미 존재하는 내용을 부연 설명하기 위한 '일반 지식' 용도로만 보조 사용한다. 고유명사의 정체성을 웹 정보로 절대 덮어쓰지 않는다.
 4. [사내 문서]에 근거가 없으면 지어내지 말고 "제공된 사내 자료로는 확인되지 않습니다"라고 솔직히 밝힌다.
 5. 웹 검색을 보조로 사용했다면 external_references 에 "설명 — URL" 형식으로 명시한다. 사용하지 않았으면 빈 배열/ null.
-6. script 는 발표 스크립트처럼 제목/소제목/문단이 잘 구분된 마크다운으로, presentation.points 는 핵심 포인트 3~5개로 작성한다.`;
+6. script 는 발표 스크립트처럼 제목/소제목/문단이 잘 구분된 마크다운으로, presentation.points 는 핵심 포인트 3~5개로 작성한다.
+
+[출처(Citation) 표기 — 필수]
+- [사내 문서] 내용을 근거로 문장/단락을 작성할 때는, 반드시 그 문장 또는 단락의 끝에 출처를 \`[참고: 파일명.pdf]\` 형태로 표기한다.
+- 출처에 쓰는 파일명은 각 사내자료 블록의 "파일명:" 값을 그대로 사용한다(지어내지 말 것).
+- 서로 다른 파일을 함께 근거로 썼다면 \`[참고: A.pdf, B.docx]\` 처럼 함께 표기한다.
+- 출처 표기는 주로 script 본문에 단다. 사내 자료가 전혀 없어 근거가 없으면 출처를 달지 않는다.`;
 
   const prompt = `# 사용자 질문
 ${question}

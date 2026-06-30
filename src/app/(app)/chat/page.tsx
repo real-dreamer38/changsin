@@ -1,7 +1,7 @@
 import { requireUser } from "@/lib/auth";
-import { ChatInterface } from "@/components/chat/chat-interface";
+import { ChatWorkspace } from "@/components/chat/chat-workspace";
 
 export default async function ChatPage() {
   await requireUser();
-  return <ChatInterface />;
+  return <ChatWorkspace />;
 }

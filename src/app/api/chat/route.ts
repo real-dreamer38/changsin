@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { streamObject } from "ai";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { google, STREAM_MODEL } from "@/lib/ai";
 import { retrieveContext, buildAnswerPrompt } from "@/lib/rag";
+import type { ChatResponse } from "@/types";
 
 export const maxDuration = 60; // Vercel 무료(Hobby) 티어 최대치
 
@@ -52,18 +54,49 @@ export async function POST(request: Request) {
 
   const body = await request.json().catch(() => ({}));
   const question = (body?.question ?? "").toString().trim();
+  const requestedSessionId =
+    typeof body?.sessionId === "string" ? body.sessionId : null;
   if (!question) {
     return NextResponse.json({ error: "질문을 입력하세요." }, { status: 400 });
   }
 
+  // 채팅 기록 저장은 RLS 우회 이슈/스트림 중 쿠키쓰기 회피를 위해 admin 클라이언트로 처리(소유권 수동 검증)
+  const admin = createAdminClient();
+  const userId = user.id;
+
+  /** 세션 확보: 기존 세션 검증 또는 신규 생성. 실패해도 채팅은 진행(best-effort). */
+  async function ensureSession(): Promise<{ id: string; title: string } | null> {
+    try {
+      if (requestedSessionId) {
+        const { data } = await admin
+          .from("chat_sessions")
+          .select("id, title, user_id")
+          .eq("id", requestedSessionId)
+          .maybeSingle();
+        if (data && data.user_id === userId) {
+          return { id: data.id, title: data.title };
+        }
+      }
+      const title = question.slice(0, 60);
+      const { data, error } = await admin
+        .from("chat_sessions")
+        .insert({ user_id: userId, title })
+        .select("id, title")
+        .single();
+      if (error || !data) {
+        console.error("세션 생성 실패:", error?.message);
+        return null;
+      }
+      return data;
+    } catch (e) {
+      console.error("세션 확보 오류:", e);
+      return null;
+    }
+  }
+
   const encoder = new TextEncoder();
 
-  // NDJSON 스트림: 응답을 '즉시' 반환해 연결을 열고, 내부에서 검색→생성을 진행한다.
-  // - status: 초기/하트비트 더미 (5초 이내 + 주기적으로 송출 → keep-alive)
-  // - meta:   RAG 근거(badge) 메타데이터
-  // - object: 부분 답변(스트리밍)
-  // - done:   최종 답변
-  // - error:  처리 중 발생한 오류(친절 메시지)
+  // NDJSON 스트림: 응답을 '즉시' 반환해 연결을 열고, 내부에서 검색→생성→저장을 진행.
   const stream = new ReadableStream({
     async start(controller) {
       let closed = false;
@@ -72,22 +105,29 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
       };
 
-      // 검색/생성이 느려도 연결이 끊기지 않도록 5초마다 하트비트
       send({ type: "status", message: "자료를 분석 중입니다..." });
       const heartbeat = setInterval(() => {
         send({ type: "status", message: "자료를 분석 중입니다..." });
       }, 5000);
 
+      let sessionId: string | null = null;
+
       try {
-        // 1) RAG 컨텍스트 검색 (벡터 + 필요 시 웹 딥서치)
+        // 0) 세션 확보 + 사용자 메시지 저장
+        const session = await ensureSession();
+        if (session) {
+          sessionId = session.id;
+          send({ type: "session", id: session.id, title: session.title });
+          await admin
+            .from("chat_messages")
+            .insert({ session_id: session.id, role: "user", content: question })
+            .then(({ error }) => {
+              if (error) console.error("사용자 메시지 저장 실패:", error.message);
+            });
+        }
+
+        // 1) RAG 컨텍스트 검색 (하이브리드: FTS + 벡터)
         const ctx = await retrieveContext(question);
-        send({
-          type: "meta",
-          used_internal: ctx.usedInternal,
-          used_web: ctx.usedWeb,
-          source_files: ctx.sourceFiles,
-          web_references: ctx.webReferences,
-        });
 
         // 2) 구조화 답변 스트리밍
         const { system, prompt } = buildAnswerPrompt(question, ctx);
@@ -99,15 +139,49 @@ export async function POST(request: Request) {
           temperature: 0.3,
         });
 
-        clearInterval(heartbeat); // 이제 object 이벤트가 연결을 유지
+        clearInterval(heartbeat);
         for await (const partial of result.partialObjectStream) {
           send({ type: "object", object: partial });
         }
-        const final = await result.object; // 검증 실패 시 throw
-        send({ type: "done", object: final });
+        const final = await result.object;
+
+        // 3) 최종 ChatResponse 구성(메타 포함)
+        const answer: ChatResponse = {
+          presentation: final.presentation,
+          script: final.script,
+          external_references:
+            final.external_references && final.external_references.length > 0
+              ? final.external_references
+              : ctx.usedWeb && ctx.webReferences.length > 0
+                ? ctx.webReferences
+                : null,
+          used_internal: ctx.usedInternal,
+          used_web: ctx.usedWeb,
+          source_files: ctx.sourceFiles,
+        };
+
+        // 4) assistant 메시지 저장
+        if (sessionId) {
+          await admin
+            .from("chat_messages")
+            .insert({ session_id: sessionId, role: "assistant", answer })
+            .then(({ error }) => {
+              if (error) console.error("답변 저장 실패:", error.message);
+            });
+        }
+
+        send({ type: "done", answer });
       } catch (e) {
         console.error("RAG 스트리밍 오류:", e);
-        send({ type: "error", message: toFriendlyError(e) });
+        const message = toFriendlyError(e);
+        if (sessionId) {
+          await admin
+            .from("chat_messages")
+            .insert({ session_id: sessionId, role: "assistant", error: message })
+            .then(() => {})
+            .then(undefined, () => {});
+        }
+        send({ type: "error", message });
       } finally {
         clearInterval(heartbeat);
         closed = true;
@@ -120,7 +194,6 @@ export async function POST(request: Request) {
     headers: {
       "content-type": "application/x-ndjson; charset=utf-8",
       "cache-control": "no-cache, no-transform",
-      // 프록시(Nginx 등) 버퍼링 방지로 즉시 flush
       "x-accel-buffering": "no",
     },
   });

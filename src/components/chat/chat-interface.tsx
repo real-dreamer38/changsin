@@ -7,28 +7,30 @@ import { AnswerView } from "./answer-view";
 import { Send, Loader2, Bot, User, Sparkles, Square, AlertTriangle } from "lucide-react";
 import type { ChatResponse } from "@/types";
 
-interface RagMeta {
-  used_internal: boolean;
-  used_web: boolean;
-  source_files: string[];
-  web_references: string[];
-}
-
-interface Turn {
+export interface Turn {
   id: string;
   question: string;
   answer?: ChatResponse;
   error?: string;
 }
 
-// 부분 답변 객체(스트리밍 중)
 type PartialAnswer = Partial<ChatResponse>;
 
 const TIMEOUT_MESSAGE =
   "답변을 생성하는 데 시간이 너무 오래 걸려 연결이 끊겼습니다. 질문을 조금 더 구체적으로 작성해 주세요.";
 
-export function ChatInterface() {
-  const [history, setHistory] = useState<Turn[]>([]);
+export function ChatInterface({
+  initialSessionId = null,
+  initialHistory = [],
+  onSessionCreated,
+  onPersisted,
+}: {
+  initialSessionId?: string | null;
+  initialHistory?: Turn[];
+  onSessionCreated?: (id: string, title: string) => void;
+  onPersisted?: () => void;
+}) {
+  const [history, setHistory] = useState<Turn[]>(initialHistory);
   const [liveQuestion, setLiveQuestion] = useState<string | null>(null);
   const [liveObject, setLiveObject] = useState<PartialAnswer | null>(null);
   const [statusMsg, setStatusMsg] = useState<string>("자료를 분석 중입니다...");
@@ -38,6 +40,8 @@ export function ChatInterface() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const idCounter = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  // 현재 대화의 세션 id (새 대화면 null → 첫 응답에서 서버가 생성)
+  const sessionIdRef = useRef<string | null>(initialSessionId);
 
   function nextId() {
     idCounter.current += 1;
@@ -55,6 +59,7 @@ export function ChatInterface() {
     setLiveObject(null);
     setLoading(false);
     abortRef.current = null;
+    onPersisted?.();
   }
 
   async function send() {
@@ -70,35 +75,18 @@ export function ChatInterface() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    let meta: RagMeta | null = null;
     let lastObject: PartialAnswer | null = null;
-    let finished = false; // done/error 이벤트를 받았는지
-
-    function toChatResponse(obj: PartialAnswer): ChatResponse {
-      return {
-        presentation: obj.presentation as ChatResponse["presentation"],
-        script: obj.script ?? "",
-        external_references:
-          obj.external_references && obj.external_references.length > 0
-            ? obj.external_references
-            : meta && meta.web_references.length > 0
-              ? meta.web_references
-              : null,
-        used_internal: meta?.used_internal ?? false,
-        used_web: meta?.used_web ?? false,
-        source_files: meta?.source_files ?? [],
-      };
-    }
+    let finished = false;
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question, sessionId: sessionIdRef.current }),
         signal: controller.signal,
       });
 
-      // 스트림 시작 전의 명시적 에러(401/403/400 등 JSON)
+      // 스트림 시작 전 명시적 에러(401/403/400 등 JSON)
       if (!res.ok || !res.body) {
         let msg = "요청을 처리할 수 없습니다.";
         try {
@@ -111,7 +99,6 @@ export function ChatInterface() {
         return;
       }
 
-      // NDJSON 스트림 파싱
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -132,25 +119,22 @@ export function ChatInterface() {
           try {
             evt = JSON.parse(line);
           } catch {
-            continue; // 깨진 라인은 건너뜀
+            continue;
           }
 
           if (evt.type === "status") {
             if (!lastObject) setStatusMsg(evt.message ?? "분석 중...");
-          } else if (evt.type === "meta") {
-            meta = {
-              used_internal: !!evt.used_internal,
-              used_web: !!evt.used_web,
-              source_files: evt.source_files ?? [],
-              web_references: evt.web_references ?? [],
-            };
+          } else if (evt.type === "session") {
+            // 새 대화에서 세션이 생성됨 → 이후 메시지부터 이 세션에 이어붙임
+            const isNew = sessionIdRef.current !== evt.id;
+            sessionIdRef.current = evt.id;
+            if (isNew) onSessionCreated?.(evt.id, evt.title ?? "새 대화");
           } else if (evt.type === "object") {
             lastObject = evt.object as PartialAnswer;
             setLiveObject(lastObject);
           } else if (evt.type === "done") {
             finished = true;
-            const obj = (evt.object as PartialAnswer) ?? lastObject ?? {};
-            commitTurn(question, { answer: toChatResponse(obj) });
+            commitTurn(question, { answer: evt.answer as ChatResponse });
             return;
           } else if (evt.type === "error") {
             finished = true;
@@ -161,18 +145,12 @@ export function ChatInterface() {
       }
 
       // 스트림이 done/error 없이 끊김 → Vercel 타임아웃 등으로 간주
-      if (!finished) {
-        commitTurn(question, { error: TIMEOUT_MESSAGE });
-      }
+      if (!finished) commitTurn(question, { error: TIMEOUT_MESSAGE });
     } catch (e: any) {
-      // 사용자가 중단(Stop) 한 경우는 조용히 종료
       if (e?.name === "AbortError") {
-        commitTurn(question, {
-          error: "사용자가 답변 생성을 중단했습니다.",
-        });
+        commitTurn(question, { error: "사용자가 답변 생성을 중단했습니다." });
         return;
       }
-      // 네트워크 끊김/타임아웃 → 초기화하지 말고 에러 말풍선
       commitTurn(question, { error: TIMEOUT_MESSAGE });
     }
   }
@@ -189,8 +167,7 @@ export function ChatInterface() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] flex-col">
-      {/* 메시지 영역 */}
+    <div className="flex h-full flex-col">
       <div className="flex-1 space-y-6 overflow-y-auto pb-4">
         {history.length === 0 && !liveQuestion && (
           <div className="flex h-full flex-col items-center justify-center text-center text-muted-foreground">
@@ -199,16 +176,15 @@ export function ChatInterface() {
               무엇이든 물어보세요
             </p>
             <p className="mt-1 max-w-md text-sm">
-              사내 자료를 최우선 기준으로 검색하고, 부족하면 웹 딥서치로 보강해
-              프레젠테이션 형태로 실시간 스트리밍 답변합니다.
+              사내 자료를 최우선 기준으로 하이브리드 검색하고, 답변에는 출처를
+              달아 드립니다. 대화는 자동 저장됩니다.
             </p>
           </div>
         )}
 
-        {/* 완료된 대화 기록 (정상 답변 또는 에러 말풍선) */}
         {history.map((t) => (
           <div key={t.id} className="space-y-4">
-            <UserBubble text={t.question} />
+            {t.question ? <UserBubble text={t.question} /> : null}
             <AssistantRow>
               {t.error ? (
                 <ErrorBubble message={t.error} />
@@ -219,7 +195,6 @@ export function ChatInterface() {
           </div>
         ))}
 
-        {/* 진행 중(스트리밍) 대화 */}
         {liveQuestion && (
           <div className="space-y-4">
             <UserBubble text={liveQuestion} />
@@ -238,7 +213,6 @@ export function ChatInterface() {
         <div ref={bottomRef} />
       </div>
 
-      {/* 입력 영역 */}
       <div className="border-t bg-background pt-4">
         <div className="flex items-end gap-2">
           <Textarea

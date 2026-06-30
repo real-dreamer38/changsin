@@ -60,6 +60,24 @@ export interface MeetingAnalysis {
   presentation?: AiAnswer["presentation"] | null;
 }
 
+/** 채팅 세션(대화방) — 사이드바 목록용 */
+export interface ChatSession {
+  id: string;
+  title: string;
+  updated_at: string;
+}
+
+/** 채팅 메시지 DB 행 */
+export interface ChatMessageRow {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant";
+  content: string | null;
+  answer: ChatResponse | null;
+  error: string | null;
+  created_at: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
