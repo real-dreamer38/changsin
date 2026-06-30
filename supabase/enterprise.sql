@@ -8,15 +8,13 @@
 --  1) 하이브리드 검색 — 전문검색(Full-Text Search) + 벡터 결합 (RRF)
 -- =====================================================================
 
--- 1-1) 청크 본문의 tsvector 생성 컬럼 (STORED) + GIN 인덱스
+-- 1-1) FTS 표현식(expression) GIN 인덱스
 --      한국어/부품번호/고유명사 정확매칭을 위해 'simple' 구성을 사용한다
 --      (형태소 분석 없이 토큰 단위 정확 매칭 → 브랜드명/모델명에 강함).
-alter table public.document_chunks
-  add column if not exists content_tsv tsvector
-  generated always as (to_tsvector('simple', content)) stored;
-
+--      ※ 생성컬럼(generated)은 IMMUTABLE 표현식만 허용되어 to_tsvector(2-arg)를 못 쓴다.
+--        표현식 인덱스는 상수 config 의 to_tsvector 를 허용하므로 이 방식을 사용한다.
 create index if not exists chunks_fts_idx
-  on public.document_chunks using gin (content_tsv);
+  on public.document_chunks using gin (to_tsvector('simple', content));
 
 -- 1-2) 하이브리드 매칭 RPC (Reciprocal Rank Fusion)
 --      키워드 순위와 벡터 순위를 RRF 로 융합해 정확도를 극대화한다.
@@ -48,12 +46,12 @@ full_text as (
   select
     c.id,
     row_number() over (
-      order by ts_rank_cd(c.content_tsv, (select q from fts_query)) desc
+      order by ts_rank_cd(to_tsvector('simple', c.content), (select q from fts_query)) desc
     ) as rank_ix
   from public.document_chunks c
   join public.documents d on d.id = c.document_id
   where d.status = 'ready'
-    and c.content_tsv @@ (select q from fts_query)
+    and to_tsvector('simple', c.content) @@ (select q from fts_query)
   order by rank_ix
   limit least(match_count, 30) * 2
 ),
